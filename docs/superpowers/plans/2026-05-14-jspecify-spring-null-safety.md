@@ -88,9 +88,15 @@ You are implementing this interface in a class whose package is @NullMarked. Wri
 
 Expected baseline behavior (the gap): the agent writes `public String getHeader(String name)` — omitting `@Nullable`, assuming the annotation is inherited from the interface. Record verbatim.
 
-- [ ] **Step 4: Record the baseline gaps**
+- [x] **Step 4: Record the baseline gaps**
 
-Write a short summary (3-5 lines) of which gaps reproduced. These are the failing tests this skill must make pass. Keep this summary for the Task 5 commit message. If a scenario did NOT show a gap (the agent already did the right thing), note it — that section of the skill may be unnecessary.
+**RED findings (2026-05-14):**
+- **Scenario A (@Contract) — GAP.** Agent reached for `@Contract("null -> fail")` but used `org.jetbrains.annotations.Contract`, not Spring's `org.springframework.lang.Contract`, and offered it as one option among `Objects.requireNonNull` / `@EnsuresNonNull`.
+- **Scenario B (migration) — GAP.** With a realistic (non-leading) prompt, the agent migrated `@Nullable private Object[] buffer` to `private @Nullable Object @Nullable [] buffer` — silently broadening element nullness the original never had.
+- **Scenario C (overriding) — NO GAP.** Agent reliably repeats `@Nullable` on the override and explains non-inheritance correctly, even with a subtle prompt.
+- **Kotlin interop — not baseline-testable** in a text scenario.
+
+**Decision:** @Contract and migration become full sections (proven gaps). Overriding + Kotlin are condensed into one brief "Other Spring-Specific Notes" reference section (user decision).
 
 ---
 
@@ -106,7 +112,7 @@ Create `skills/jspecify-spring-null-safety/SKILL.md` with exactly this content:
 ````markdown
 ---
 name: jspecify-spring-null-safety
-description: Use when introducing JSpecify nullness annotations to a Spring Framework project — annotating assertion/precondition methods with @Contract, migrating off deprecated org.springframework.lang annotations (@NonNullApi, @NonNullFields, @Nullable), handling overridden methods, or Kotlin interop. Spring-specific; complements jspecify-user-guide.
+description: Use when introducing JSpecify nullness annotations to a Spring Framework project — annotating assertion/precondition methods with @Contract, migrating off deprecated org.springframework.lang annotations (@NonNullApi, @NonNullFields, @Nullable), and Spring-specific overriding/Kotlin concerns. Spring-specific; complements jspecify-user-guide.
 ---
 
 # JSpecify Null-Safety for Spring Projects
@@ -121,14 +127,15 @@ Spring Framework 7 exposes its APIs through JSpecify annotations. This skill cov
 
 - Annotating assertion / precondition helpers so a nullness checker trusts them
 - Migrating a Spring project off the deprecated `org.springframework.lang` nullness annotations
-- Overriding a Spring (or any) method that carries nullness annotations
-- Exposing a `@NullMarked` Java API that Kotlin code will consume
+- Overriding annotated Spring methods, or exposing a `@NullMarked` Java API to Kotlin
 
 When NOT to use: for general "where do I put `@Nullable`" questions, use jspecify-user-guide instead.
 
 ## @Contract on Assertion / Precondition Methods
 
-An assertion helper like `Assert.notNull(x)` does not change `x`'s type, but after it returns successfully `x` is known non-null. JSpecify annotations alone cannot express this — a nullness checker still treats `x` as `@Nullable`. Spring's `org.springframework.lang.@Contract` bridges the gap.
+An assertion helper like `Assert.notNull(x)` does not change `x`'s type, but after it returns successfully `x` is known non-null. JSpecify annotations alone cannot express this — a nullness checker still treats `x` as `@Nullable`. Spring ships **`org.springframework.lang.@Contract`** for exactly this.
+
+**Use Spring's `@Contract`, not JetBrains'.** `org.jetbrains.annotations.Contract` has the same string syntax and NullAway recognizes it too, but a Spring project should use `org.springframework.lang.Contract` — no extra dependency, and it is the annotation Spring's own codebase and docs use.
 
 **Rule:** any method whose purpose is to validate or guarantee nullness gets `@Contract`. Ordinary methods do not — `@Contract` on a method with no real nullness contract is noise.
 
@@ -172,34 +179,22 @@ The `org.springframework.lang` nullness annotations are deprecated as of Spring 
 Two migration gotchas:
 
 1. **Reposition to type-use.** The old Spring `@Nullable` sat in *declaration* position (`@Nullable private String f;`). JSpecify `@Nullable` is a type-use annotation and goes immediately before the type (`private @Nullable String f;`). Same for parameters and return types.
-2. **Arrays change meaning.** Old Spring `@Nullable Object[] cache` meant "the array may be null." Under JSpecify that exact position means "the *elements* may be null." To preserve the original meaning, migrate it to `Object @Nullable [] cache`. A mechanical import swap silently flips array nullness to element nullness.
+2. **Do not broaden array nullness.** Old Spring `@Nullable private Object[] buffer` meant exactly one thing: *the array reference* may be null. Migrate it to `private Object @Nullable [] buffer` — and nothing more. Do **not** "upgrade" it to `@Nullable Object @Nullable []`: that also marks the *elements* nullable, a contract the original code never had. Migrate the meaning that existed, not a meaning you imagine.
 
-## Overridden Methods Do Not Inherit Nullness
+## Other Spring-Specific Notes
 
-JSpecify annotations are **not** inherited from an overridden method. When you override a Spring method (or any annotated method), copy its `@Nullable` annotations onto your override. Omit them and, inside `@NullMarked`, the parameter or return is silently re-declared non-null — changing the contract without warning.
+**Overriding annotated methods.** JSpecify annotations are not inherited from the overridden method. When you override an annotated Spring method, repeat its `@Nullable` annotations on your override (e.g. `@Override public @Nullable String getHeader(String name)`). Most agents already do this correctly — it is here as a checklist item, not a common failure.
 
-```java
-// Spring declares: @Nullable String getHeader(String name);
-@Override
-public @Nullable String getHeader(String name) {   // @Nullable must be repeated
-    ...
-}
-```
-
-## Kotlin Interop
-
-A correctly annotated `@NullMarked` Java API gives Kotlin callers real null-safety for free: plain Java types become Kotlin non-null (`String`), `@Nullable` types become Kotlin nullable (`String?`).
-
-The consequence: a *missing* `@Nullable` on a Java return that Kotlin consumes is not a warning — Kotlin trusts the Java type as non-null, so the `null` surfaces as a runtime `NullPointerException` at the Kotlin call site. Get the Java API surface right before Kotlin code depends on it.
+**Kotlin interop.** A correctly annotated `@NullMarked` Java API maps to Kotlin null-safety automatically: plain Java types become Kotlin non-null (`String`), `@Nullable` types become Kotlin nullable (`String?`). A *missing* `@Nullable` on a Java return is not a warning — Kotlin trusts the type as non-null, so the `null` surfaces as a runtime `NullPointerException` at the Kotlin call site. Get the Java API surface right before Kotlin depends on it.
 
 ## Common Mistakes
 
 | Mistake | Fix |
 |---------|-----|
+| Using `org.jetbrains.annotations.Contract` in a Spring project | Use `org.springframework.lang.Contract` — no extra dependency |
 | Assertion helper left un-`@Contract`-ed; callers add redundant null checks or `@SuppressWarnings` | Add `@Contract` to the helper |
 | Keeping `@NonNullApi` / `@NonNullFields` alongside `@NullMarked` | Delete both — `@NullMarked` replaces both |
-| Mechanically swapping `@Nullable Object[]` imports | Migrate to `Object @Nullable []` to keep "nullable array" meaning |
-| Overriding an annotated method without repeating `@Nullable` | Copy the annotations onto the override |
+| Migrating `@Nullable Object[]` to `@Nullable Object @Nullable []` | Use `Object @Nullable []` — don't broaden element nullness |
 | `@Contract` on methods with no nullness contract | Remove it — only nullness-validating methods need it |
 ````
 
@@ -211,7 +206,9 @@ Expected: frontmatter shows `name:` and `description:` fields; `name` uses only 
 
 ---
 
-## Task 3: GREEN verification — Re-test the scenarios with the skill
+## Task 3: GREEN verification — Re-test the proven-gap scenarios with the skill
+
+Only Scenarios A (@Contract) and B (migration) showed a baseline gap in Task 1, so only those are GREEN-verified. Scenario C (overriding) had no gap and Kotlin was not testable — both are reference-only content in the skill, nothing to verify.
 
 **Files:**
 - None created.
@@ -226,21 +223,25 @@ First read the skill at skills/jspecify-spring-null-safety/SKILL.md and apply it
 [then the exact @Contract scenario prompt from Task 1 Step 1]
 ```
 
-Expected: the agent adds `@Contract("null -> fail")` to `requireLoaded` and explains that the checker then treats `config` as non-null after the call. PASS.
+Expected (PASS): the agent uses `@Contract("null -> fail")` from `org.springframework.lang.Contract` (NOT `org.jetbrains.annotations.Contract`) on `requireLoaded`, and explains the checker then treats `config` as non-null after the call.
 
 - [ ] **Step 2: Re-run the legacy-migration scenario with the skill**
 
-Use the `Agent` tool the same way, with the Task 1 Step 2 prompt prefixed with the same "read the skill first" instruction.
+Use the `Agent` tool the same way, with the Task 1 Step 2 *subtle* prompt (the realistic, non-leading one) prefixed with the same "read the skill first" instruction:
 
-Expected: `package-info.java` uses only `@NullMarked` (both `@NonNullApi` and `@NonNullFields` removed); `@Nullable` imports become `org.jspecify.annotations.Nullable` in type-use position; `buffer` becomes `Object @Nullable [] buffer`. PASS.
+```
+First read the skill at skills/jspecify-spring-null-safety/SKILL.md and apply it.
 
-- [ ] **Step 3: Re-run the overriding scenario with the skill**
+This is a Spring Framework 7 project. The `org.springframework.lang` nullness annotations in the code below are deprecated. Update this code to the current recommended approach for Spring Framework 7.
 
-Use the `Agent` tool the same way, with the Task 1 Step 3 prompt prefixed with the same "read the skill first" instruction.
+[same package-info.java + CacheStore.java code from Task 1 Step 2]
 
-Expected: the override is written `public @Nullable String getHeader(String name)` — `@Nullable` repeated. PASS.
+Show the updated files.
+```
 
-- [ ] **Step 4: Record results**
+Expected (PASS): `package-info.java` uses only `@NullMarked` (both `@NonNullApi` and `@NonNullFields` removed); `@Nullable` becomes `org.jspecify.annotations.Nullable` in type-use position; `buffer` becomes `private Object @Nullable [] buffer` — element nullness NOT broadened.
+
+- [ ] **Step 3: Record results**
 
 Note which scenarios PASS and which still show the baseline gap. Any non-PASS feeds Task 4.
 
@@ -297,6 +298,6 @@ Expected: the commit appears; working tree clean.
 
 ## Self-Review
 
-- **Spec coverage:** `@Contract` rules → Task 2 §"@Contract on Assertion / Precondition Methods" + Task 1/3 scenario A. Legacy migration (incl. array gotcha, repositioning) → Task 2 §"Migrating Off Deprecated Spring Annotations" + scenario B. Override non-inheritance → Task 2 §"Overridden Methods..." + scenario C. Kotlin interop → Task 2 §"Kotlin Interop" (reviewed via doc inspection in Task 2 Step 2; not subagent-tested, as interop behavior is hard to reproduce in a text scenario). Common Mistakes table → Task 2. Cross-reference to `jspecify-user-guide` as REQUIRED BACKGROUND → Task 2 Overview. All spec sections map to tasks.
+- **Spec coverage:** `@Contract` rules → Task 2 §"@Contract on Assertion / Precondition Methods" + Task 1/3 scenario A (proven gap). Legacy migration (incl. array gotcha, repositioning) → Task 2 §"Migrating Off Deprecated Spring Annotations" + scenario B (proven gap). Override non-inheritance + Kotlin interop → Task 2 §"Other Spring-Specific Notes" (reference-only; scenario C showed no baseline gap and Kotlin was not text-testable — user decision to keep as brief reference). Common Mistakes table → Task 2. Cross-reference to `jspecify-user-guide` as REQUIRED BACKGROUND → Task 2 Overview. All spec sections map to tasks.
 - **Placeholder scan:** one intentional fill-in — the commit-message gap summary in Task 5 Step 1 — with an explicit instruction to replace it from Task 1 Step 4 findings. No other placeholders.
 - **Type consistency:** scenario prompts in Task 1 and Task 3 are referenced by exact step numbers and reused verbatim; the `SKILL.md` content is given in full once in Task 2 and only edited (not redefined) in Task 4.
