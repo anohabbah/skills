@@ -115,9 +115,48 @@ class TypeDescriptor {
 
 Expected baseline behavior (the gap): the agent leaves `resolvedType` plain (non-null) because "it is always set before it is returned", and/or marks `getResolvedType()`'s return `@Nullable`. The correct reading: the field is `@Nullable` (null between construction and first call); the getter return is non-null. Record verbatim.
 
-- [ ] **Step 4: Record the baseline gaps**
+- [x] **Step 4: Record the baseline gaps**
 
-Write the verbatim findings for each scenario into this step as `**RED findings (YYYY-MM-DD):**` with one bullet per scenario, each marked `GAP` or `NO GAP`. If a scenario shows NO GAP, note it — the corresponding section stays in the skill as reference but is not GREEN-verified in Task 3.
+**RED findings (2026-05-14):** each scenario was run twice — once with the plan's
+prompt, once with a subtler non-leading variant.
+
+- **Scenario A (`@Contract` on a boolean nullness-gate) — GAP (confirmed).**
+  Leading prompt: agent added `@Contract("null -> true")` but only because the
+  prompt spelled out the caller's narrowing need, and sourced it from JetBrains,
+  not Spring. Subtle prompt (`hasText`, no caller hint): agent added
+  `@Nullable String str` and explicitly concluded *"No other annotations are
+  required"* — it did **not** recognize that a boolean nullness-gate method
+  should carry `@Contract("null -> false")`. This is the genuine, reproducible
+  failure the skill must close.
+- **Scenario B (`@Nullable` return / name-over-body) — NO GAP.**
+  Both the blatant `return null` body and the subtle one (strong non-null name +
+  confident Javadoc + `return map.get(key)`) were annotated correctly. Agents
+  reliably read the body, recognise delegation to a nullable-returning call, and
+  mark the return `@Nullable` — and correct the stale Javadoc unprompted.
+- **Scenario C (`@Nullable` field) — NO GAP.**
+  Both the lazy-cache field and the subtle configured-after-construction field
+  were marked `@Nullable` with correct reasoning ("null between construction and
+  first use / `initialize()`"). One agent also surfaced the latent
+  call-before-init bug unprompted.
+
+**Two additional `@Contract` shapes were baseline-tested after the first three
+scenarios** (to confirm whether `@Contract` is a uniform gap or only at the
+boolean nullness-gate):
+
+- **`@Contract` null-preserving transform — GAP.** On `getFilename(path)` (body:
+  `if (path == null) return null; ...`) the agent added `@Nullable` to param and
+  return but explicitly stopped there. It did **not** recognize this shape earns
+  `@Contract("null -> null; !null -> !null")`, so callers cannot narrow.
+- **`@Contract` argument-returning fallback — GAP.** On `concatenateStringArrays`
+  (body: `if (array1 == null) return array2; if (array2 == null) return array1;
+  ...`) the agent again added `@Nullable` correctly but missed
+  `@Contract("null, _ -> param2; _, null -> param1")`.
+
+**Scope decision (user, 2026-05-15):** refocus the skill on **`@Contract`
+inference** (the genuine, reproducible gap across all three shapes tested).
+Demote `@Nullable` returns / parameters / fields to a single compact
+quick-reference table — they are reference-only, not gap-closing teaching.
+Tasks 2 and 3 are rewritten below to reflect this.
 
 ---
 
