@@ -1,6 +1,6 @@
 ---
 name: jspecify-spring-framework-patterns
-description: Use when a Spring `@Nullable`-annotated method's callers still hit redundant null-check warnings, when annotating `isEmpty`/`hasText`/`getFilename`-style utilities, or when deciding whether `@Contract("null -> true" | "null -> false" | "null -> null; !null -> !null" | "null, _ -> param2")` belongs on a Spring method. Keywords: boolean nullness-gate, null-preserving transform, default-substituting, argument-returning fallback. Complements jspecify-user-guide and jspecify-spring-null-safety.
+description: Use when a Spring `@Nullable`-annotated method's callers still hit redundant null-check warnings, when annotating `isEmpty`/`hasText`/`getFilename`-style utilities, or when deciding whether `@Contract("null -> true" | "null -> false" | "null -> null; !null -> !null" | "null, _ -> param2")` belongs on a Spring method. Keywords — boolean nullness-gate, null-preserving transform, default-substituting, argument-returning fallback. Complements jspecify-user-guide and jspecify-spring-null-safety.
 ---
 
 # Inferring `@Contract` from Spring Method Shapes
