@@ -27,6 +27,47 @@ When NOT to use: for *where* `@Nullable` belongs (placement, arrays, generics)
 → jspecify-user-guide. For `@Contract` *string syntax* and assertion methods
 (`Assert.notNull`-style) → jspecify-spring-null-safety.
 
+## First Check: Is It Lookup-or-Null?
+
+Before matching shapes, rule out the case `@Contract` doesn't apply to. A
+method whose return-null depends on **runtime data** (collection contents,
+request state, parse success) — not on whether a parameter was null — wants
+`@Nullable` only. No contract holds.
+
+```java
+public static @Nullable Cookie getCookie(HttpServletRequest request, String name) {
+    Cookie[] cookies = request.getCookies();
+    if (cookies != null) {
+        for (Cookie cookie : cookies) {
+            if (name.equals(cookie.getName())) {
+                return cookie;
+            }
+        }
+    }
+    return null;          // null when the lookup misses, not when an arg was null
+}
+```
+
+The whole `spring-web` module (335 `@Nullable`-returning methods, zero
+`@Contract` annotations) is the corpus evidence: `WebUtils.getCookie`,
+`HttpHeaders.getFirst`, `ServletRequest.getParameter`,
+`WebApplicationContextUtils.findWebApplicationContext` all fit this shape.
+
+A related counter-example — accepting `@Nullable` doesn't imply a return
+contract:
+
+```java
+public static List<MediaType> parseMediaTypes(@Nullable String mediaTypes) {
+    if (!StringUtils.hasLength(mediaTypes)) {
+        return Collections.emptyList();   // unconditionally non-null
+    }
+    // ...
+}
+```
+
+Under `@NullMarked`, the non-`@Nullable` return type already encodes "never
+null." Don't reach for `@Contract("_ -> !null")`.
+
 ## The Four Shapes
 
 `@Contract` is shape-driven: read the method body and match it to one of these.
@@ -140,12 +181,13 @@ Throws-on-null methods (`Assert.notNull(x)` and peers) earn
 
 For a method already carrying `@Nullable` annotations:
 
-1. Throws when an arg is null → assertion-method rule (jspecify-spring-null-safety).
-2. Boolean return, first branch is `if (arg == null) return <true|false>;` → shape 1.
-3. `if (arg == null) return null;` then a path that always returns non-null → shape 2 (with `!null -> !null`).
-4. `if (arg == null) return null;` then a path that may itself return null → shape 2 (without `!null -> !null`).
-5. `arg != null ? arg : other`, or `if (argN == null) return otherArg;` → shape 3 or 4.
-6. None of the above → no `@Contract`. Noise on methods with no null-dependent contract.
+1. Result-null depends on lookup/parse state, not on a parameter being null → `@Nullable` only, no `@Contract`.
+2. Throws when an arg is null → assertion-method rule (jspecify-spring-null-safety).
+3. Boolean return, first branch is `if (arg == null) return <true|false>;` → shape 1.
+4. `if (arg == null) return null;` then a path that always returns non-null → shape 2 (with `!null -> !null`).
+5. `if (arg == null) return null;` then a path that may itself return null → shape 2 (without `!null -> !null`).
+6. `arg != null ? arg : other`, or `if (argN == null) return otherArg;` → shape 3 or 4.
+7. None of the above → no `@Contract`. Noise on methods with no null-dependent contract.
 
 ## Quick Reference: `@Nullable` Signals
 
@@ -168,3 +210,5 @@ contract — the parameter stays plain, not `@Nullable`.
 | Boolean nullness-gate left without `@Contract` — caller cannot narrow | Add `@Contract("null -> true")` or `"null -> false"` |
 | Using `@Contract("null -> null; !null -> !null")` on a method whose non-null path can return null | Drop the `!null -> !null` half; the contract lies otherwise |
 | `@Contract` on a method with no null-dependent contract | Remove it — noise, and a maintenance hazard |
+| `@Contract` on a lookup-or-null method (`getCookie`, `getFirst`, `getParameter`) | Remove it — null comes from the lookup missing, not from a parameter; `@Nullable` alone is right |
+| `@Contract("_ -> !null")` on a parse method returning an empty collection | Remove it — under `@NullMarked`, a non-`@Nullable` return already encodes "never null" |
