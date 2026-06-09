@@ -1,86 +1,121 @@
 ---
 name: jspecify-spring-null-safety
-description: Use when introducing JSpecify nullness annotations to a Spring Framework project — annotating assertion/precondition methods with @Contract so NullAway trusts them, migrating off deprecated org.springframework.lang annotations (@NonNullApi, @NonNullFields, @Nullable), and Spring-specific overriding/Kotlin concerns. Spring-specific; complements jspecify-user-guide.
+description: Use when introducing JSpecify and Spring's @Contract annotations to a Spring Framework 6.2+/Boot 3.4+ (ideally Spring 7 / Boot 4) project not yet annotated — covers Spring-specific rules layered on top of plain JSpecify, migrating off the deprecated org.springframework.lang nullness annotations or JSR-305 jsr305, expressing nullness post-conditions with @Contract, and the NullAway/IDE setup that consumes them.
+license: MIT
+metadata:
+  author: jspecify-spring-null-safety
+  version: "1.0"
+  source: https://docs.spring.io/spring-framework/reference/core/null-safety.html
 ---
 
-# JSpecify Null-Safety for Spring Projects
+# Spring Null-Safety: JSpecify + @Contract
 
-## Overview
+**Companion skill — read `jspecify-userguide` first.** That skill covers the core
+JSpecify rules (the four nullness states, `@Nullable`/`@NonNull`/`@NullMarked`/
+`@NullUnmarked`, type-use placement, arrays, nested types, generics, locals). This
+skill adds only the **Spring-specific** rules and the `@Contract` annotation. It
+does not repeat the core rules.
 
-Spring Framework 7 exposes its APIs through JSpecify annotations. This skill covers the **Spring-specific** rules for adopting JSpecify in a Spring project. It assumes the general adoption mechanics — `@NullMarked` scoping, where `@Nullable` belongs, type-use placement, generics — are already handled.
+## Spring context
 
-**REQUIRED BACKGROUND:** Use jspecify-user-guide for the general adoption rules. This skill only adds what is Spring-specific.
+Spring Framework 7 declares nullability with **JSpecify** (`org.jspecify.annotations.*`).
+The goal is to catch `NullPointerException` at build time via explicit nullability.
+Spring expects ecosystem libraries (Reactor, Micrometer, Spring portfolio) to do the same.
 
-## When to Use
+## Migrate off the old nullness annotations
 
-- Annotating assertion / precondition helpers so a nullness checker trusts them
-- Migrating a Spring project off the deprecated `org.springframework.lang` nullness annotations
-- Overriding annotated Spring methods, or exposing a `@NullMarked` Java API to Kotlin
+Spring deprecated `org.springframework.lang.@Nullable`, `@NonNull`, `@NonNullApi`,
+and `@NonNullFields` (JSR-305 semantics). This project also carries the legacy
+`com.google.code.findbugs:jsr305` dependency. When annotating:
 
-When NOT to use: for general "where do I put `@Nullable`" questions, use jspecify-user-guide instead.
-
-## @Contract on Assertion / Precondition Methods
-
-An assertion helper like `Assert.notNull(x)` does not change `x`'s type, but after it returns successfully `x` is known non-null. JSpecify annotations alone cannot express this — a nullness checker still treats `x` as `@Nullable`. Spring ships **`org.springframework.lang.@Contract`** for exactly this.
-
-**Use Spring's `@Contract`, not JetBrains'.** `org.jetbrains.annotations.Contract` has the same string syntax and NullAway recognizes it too, but a Spring project should use `org.springframework.lang.Contract` — no extra dependency, and it is the annotation Spring's own codebase and docs use.
-
-**Rule:** any method whose purpose is to validate or guarantee nullness gets `@Contract`. Ordinary methods do not — `@Contract` on a method with no real nullness contract is noise.
-
-| Contract | Meaning |
-|----------|---------|
-| `@Contract("null -> fail")` | throws if the (single) argument is null |
-| `@Contract("null, _ -> fail")` | throws if the first argument is null |
-| `@Contract("!null -> !null")` | returns non-null when given non-null, null when given null |
-| `@Contract("_ -> param1")` | returns its first argument unchanged |
+- Use `org.jspecify.annotations.Nullable`, **not** the Spring `org.springframework.lang`
+  or `javax.annotation` (JSR-305) variants.
+- The key difference: old annotations target fields/params/returns as a whole;
+  JSpecify annotations target **type usage**, so they migrate position too.
 
 ```java
-import org.jspecify.annotations.Nullable;
-import org.springframework.lang.Contract;
-
-@Contract("null -> fail")
-public static void notNull(@Nullable Object value) {
-    if (value == null) {
-        throw new IllegalArgumentException("must not be null");
-    }
-}
-
-void use(@Nullable String name) {
-    notNull(name);
-    name.trim();   // checker now treats name as non-null — no redundant check
-}
+// Old (deprecated)              // New (JSpecify, type-use position)
+@Nullable private String field;  private @Nullable String field;
+@Nullable public String get() {} public @Nullable String get() {}
 ```
 
-Without `@Contract`, callers are forced into a redundant `if (name != null)` or a `@SuppressWarnings` — both hide the real contract.
+## Spring style convention
 
-## Migrating Off Deprecated Spring Annotations
+Place type-use annotations on the **same line, immediately preceding the type**
+(not on their own line as old field-level annotations were written):
 
-The `org.springframework.lang` nullness annotations are deprecated as of Spring Framework 7. Replace them:
+```java
+private @Nullable String fileEncoding;
 
-| Deprecated | Replacement |
-|------------|-------------|
-| `org.springframework.lang.@Nullable` | `org.jspecify.annotations.@Nullable` |
-| `org.springframework.lang.@NonNull` | delete it — redundant inside `@NullMarked` |
-| `@NonNullApi` (in `package-info.java`) | `@NullMarked` |
-| `@NonNullFields` (in `package-info.java`) | delete it — `@NullMarked` already covers fields |
+public @Nullable String buildMessage(@Nullable String message,
+                                     @Nullable Throwable cause) { ... }
+```
 
-Two migration gotchas:
+## @Contract — express nullness post-conditions
 
-1. **Reposition to type-use.** The old Spring `@Nullable` sat in *declaration* position (`@Nullable private String f;`). JSpecify `@Nullable` is a type-use annotation and goes immediately before the type (`private @Nullable String f;`). Same for parameters and return types.
-2. **Do not broaden array nullness.** Old Spring `@Nullable private Object[] buffer` meant exactly one thing: *the array reference* may be null. Migrate it to `private Object @Nullable [] buffer` — and nothing more. Do **not** "upgrade" it to `@Nullable Object @Nullable []`: that also marks the *elements* nullable, a contract the original code never had. Migrate the meaning that existed, not a meaning you imagine.
+`org.springframework.lang.Contract` declares complementary semantics that JSpecify
+alone cannot express, so analysis tools stop emitting false warnings. Use it on
+methods whose effect on nullness depends on their arguments — assertions, guards,
+and nullness-preserving transforms.
 
-## Other Spring-Specific Notes
+```java
+import org.springframework.lang.Contract;
 
-**Overriding annotated methods.** JSpecify annotations are not inherited from the overridden method. When you override an annotated Spring method, repeat its `@Nullable` annotations on your override (e.g. `@Override public @Nullable String getHeader(String name)`).
+// After a successful call, the argument is known non-null.
+@Contract("null, _ -> fail")
+public static void notNull(@Nullable Object object, String message) { ... }
 
-**Kotlin interop.** A correctly annotated `@NullMarked` Java API maps to Kotlin null-safety automatically: plain Java types become Kotlin non-null (`String`), `@Nullable` types become Kotlin nullable (`String?`). A *missing* `@Nullable` on a Java return is not a warning — Kotlin trusts the type as non-null, so the `null` surfaces as a runtime `NullPointerException` at the Kotlin call site. Get the Java API surface right before Kotlin depends on it.
+// Guard that returns whether the value is present.
+@Contract("null -> false")
+public static boolean hasText(@Nullable String str) { ... }
 
-## Common Mistakes
+// Nullness-preserving transform: null in -> null out, non-null in -> non-null out.
+@Contract("null -> null; !null -> !null")
+public static @Nullable String trimWhitespace(@Nullable String str) { ... }
+```
+
+Contract clause syntax: `args -> effect`, clauses separated by `;`.
+- **Args**: `null`, `!null`, `true`, `false`, `_` (any), positional and comma-separated.
+- **Effect**: `fail` (throws), `null`, `!null`, `true`, `false`, `new`, `this`, `_`.
+
+Without `@Contract`, a tool cannot know that code after `Assert.notNull(x, ...)` may
+treat `x` as non-null.
+
+## Tooling that consumes these annotations
+
+`@Contract` is only meaningful to a checker. Spring's recommended NullAway config:
+
+```properties
+NullAway:OnlyNullMarked=true                                  # check only @NullMarked packages
+NullAway:CustomContractAnnotations=org.springframework.lang.Contract
+NullAway:JSpecifyMode=true                                    # optional, needs JDK 22+
+```
+
+IDE support: IntelliJ IDEA has full JSpecify support; Eclipse needs manual config.
+In Kotlin, JSpecify annotations are auto-translated to Kotlin null safety.
+
+## Legitimate `@SuppressWarnings` cases
+
+When NullAway cannot prove safety but the code is correct, suppress narrowly with a
+reason comment — do not weaken the annotations themselves:
+
+```java
+@SuppressWarnings("NullAway.Init")  // field initialized lazily / by container
+@SuppressWarnings("NullAway")       // dataflow limitation, lambda, reflection, well-known map key
+```
+
+## Runtime check
+
+`org.springframework.core.Nullness` detects the nullness of a type usage, field,
+return type, or parameter at runtime — supports JSpecify, Kotlin null safety, and a
+pragmatic check against any `@Nullable` annotation regardless of package.
+
+## Common mistakes (Spring-specific)
 
 | Mistake | Fix |
 |---------|-----|
-| Using `org.jetbrains.annotations.Contract` in a Spring project | Use `org.springframework.lang.Contract` — no extra dependency |
-| Assertion helper left un-`@Contract`-ed; callers add redundant null checks or `@SuppressWarnings` | Add `@Contract` to the helper |
-| Keeping `@NonNullApi` / `@NonNullFields` alongside `@NullMarked` | Delete both — `@NullMarked` replaces both |
-| Migrating `@Nullable Object[]` to `@Nullable Object @Nullable []` | Use `Object @Nullable []` — don't broaden element nullness |
-| `@Contract` on methods with no nullness contract | Remove it — only nullness-validating methods need it |
+| Importing `org.springframework.lang.Nullable` or JSR-305 `@Nullable` | Import `org.jspecify.annotations.Nullable`. |
+| Keeping `@Nullable` on its own line (old field style) | Put it inline, immediately before the type. |
+| Assertion/guard methods cause false NPE warnings downstream | Add `@Contract` so the checker learns the post-condition. |
+| Suppressing warnings broadly to silence NullAway | Suppress narrowly (`NullAway.Init` / `NullAway`) with a reason; fix the annotation if it's actually wrong. |
+| Expecting `@Contract` to do anything on its own | It is metadata for tools (NullAway must list it via `CustomContractAnnotations`). |

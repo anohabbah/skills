@@ -1,214 +1,157 @@
 ---
 name: jspecify-spring-framework-patterns
-description: Use when a Spring `@Nullable`-annotated method's callers still hit redundant null-check warnings, when annotating `isEmpty`/`hasText`/`getFilename`-style utilities, or when deciding whether `@Contract("null -> true" | "null -> false" | "null -> null; !null -> !null" | "null, _ -> param2")` belongs on a Spring method. Keywords — boolean nullness-gate, null-preserving transform, default-substituting, argument-returning fallback. Complements jspecify-user-guide and jspecify-spring-null-safety.
+description: Use when you must DECIDE where @Nullable / @NonNull / @Contract belong while annotating un-annotated Java/Spring code and want the inference heuristics Spring Framework's own spring-core module uses — reading a method's implementation or Javadoc to infer a nullable return, parameter, or field, choosing the right @Contract clause for assertions/predicates/transforms, and deciding between @Nullable, @SuppressWarnings("NullAway.Init") and @SuppressWarnings("NullAway").
+license: MIT
+metadata:
+  author: jspecify-spring-framework-patterns
+  version: "1.0"
+  source: https://github.com/spring-projects/spring-framework (spring-core + spring-web module analysis)
 ---
 
-# Inferring `@Contract` from Spring Method Shapes
+# Spring Framework Nullness Patterns (inference heuristics)
 
-## Overview
+**Companion skill — read `jspecify-userguide` and `jspecify-spring-null-safety` first.**
+Those cover the JSpecify rules, placement, generics, migration, and `@Contract`
+syntax. This skill answers the harder question: **given un-annotated code, how do
+you infer *where* `@Nullable` and which `@Contract` clause belong** — distilled from
+how `spring-core` and `spring-web` actually annotate themselves. Evidence cited by
+class + method.
 
-`@Nullable` describes the *types* on a signature; it does not describe how the
-return depends on which arguments were null. Without `@Contract`, a caller's
-`if (!ObjectUtils.isEmpty(value))` cannot narrow `value`, and a caller of
-`getFilename(path)` cannot rely on a non-null path producing a non-null result.
-This skill is the recognition layer for the four `@Contract` shapes that recur
-in `spring-core`-style utilities.
+## Inferring a `@Nullable` RETURN
 
-**REQUIRED BACKGROUND:** jspecify-user-guide for placement; jspecify-spring-null-safety
-for `@Contract` string syntax, the Spring vs JetBrains choice, and assertion methods.
+Annotate the return `@Nullable` when **any** of these signals is present:
 
-## When to Use
+| Signal | Evidence (spring-core) |
+|--------|------------------------|
+| A `return null;` literal on some path | `StringUtils.getFilenameExtension`, `ClassUtils.resolvePrimitiveClassName`, `ReflectionUtils.findMethod` |
+| Javadoc `@return ... or {@code null} if not found / if none / cannot be resolved` | `CollectionUtils.findFirstMatch`, `AnnotationUtils.getAnnotation`, `CollectionUtils.firstElement` |
+| Name implies a lookup that can miss: `find*`, `get*`, `resolve*`, `firstElement`/`lastElement` | `ReflectionUtils.findField`, `CollectionUtils.findValueOfType`, `AnnotationUtils.getValue` |
+| Return delegates to an already-`@Nullable` method (`opt.orElse(null)`, a `Map.get`, another `@Nullable` API) | `ObjectUtils.unwrapOptional` returns `optional.orElse(null)` |
+| Method carries `@Contract("null -> null")` / `"...-> null"` | `ClassUtils.resolvePrimitiveClassName`, `CollectionUtils.firstElement` |
 
-- Deciding whether an already-`@Nullable`-annotated Spring method also needs `@Contract`
-- A checker forces redundant null checks at call sites of a `@Nullable`-annotated API
-- The return depends conditionally on which arguments were null
+**Anti-pattern — do NOT mark `@Nullable`:** Spring deliberately returns an **empty
+collection / array / string** instead of `null`. `StringUtils.tokenizeToStringArray`
+returns `EMPTY_STRING_ARRAY`; `ClassUtils.getAllInterfacesForClassAsSet` returns an
+empty set. Prefer-empty-over-null methods stay non-null. Also: `boolean`/primitive
+returns are never `@Nullable` (use `@Contract` instead — see below).
 
-When NOT to use: for *where* `@Nullable` belongs (placement, arrays, generics)
-→ jspecify-user-guide. For `@Contract` *string syntax* and assertion methods
-(`Assert.notNull`-style) → jspecify-spring-null-safety.
+## Inferring a `@Nullable` PARAMETER
 
-## First Check: Is It Lookup-or-Null?
+| Signal | Evidence |
+|--------|----------|
+| Javadoc says `(may be {@code null})` / `or {@code null}` | `MimeType(String,String,@Nullable Map)` param `parameters` |
+| Body guards it: `if (param != null)` | `Assert.nullSafeGet(@Nullable Supplier)` → `messageSupplier != null ? ... : null` |
+| Ternary fallback to a default: `param != null ? param : default` | `CustomizableThreadCreator(@Nullable String prefix)` |
+| A `@Nullable`-accepting overload exists, or the value is later passed to a `@Nullable` slot | common across `Assert.*` |
 
-Before matching shapes, rule out the case `@Contract` doesn't apply to. A
-method whose return-null depends on **runtime data** (collection contents,
-request state, parse success) — not on whether a parameter was null — wants
-`@Nullable` only. No contract holds.
+## Inferring a `@Nullable` FIELD (vs deferred init)
 
-```java
-public static @Nullable Cookie getCookie(HttpServletRequest request, String name) {
-    Cookie[] cookies = request.getCookies();
-    if (cookies != null) {
-        for (Cookie cookie : cookies) {
-            if (name.equals(cookie.getName())) {
-                return cookie;
-            }
-        }
-    }
-    return null;          // null when the lookup misses, not when an arg was null
-}
-```
+- **`@Nullable` field** when the value is legitimately absent: not assigned (or
+  assigned `null`) in the constructor, can be reset to `null`, or is a lazily-computed
+  cache. Real: `StopWatch.currentTaskName`, `MimeType.resolvedCharset`
+  (`transient @Nullable`), `MimeType.toStringValue` (`volatile @Nullable`),
+  `SingletonSupplier.singletonInstance` (`volatile @Nullable`, double-checked lock).
+- **`@SuppressWarnings("NullAway.Init")` on a NON-null field** when init is *deferred
+  but certain before use* — framework/container injection, or a stateful object that
+  sets the field behind a guard flag before reading it. Real:
+  `MergedAnnotationPredicates.FirstRunOfPredicate.lastValue` (set on first `test()`
+  call, guarded by `hasLastValue`). Decision rule: **legitimately absent → `@Nullable`;
+  always set before read → `NullAway.Init`.**
 
-The whole `spring-web` module (335 `@Nullable`-returning methods, zero
-`@Contract` annotations) is the corpus evidence: `WebUtils.getCookie`,
-`HttpHeaders.getFirst`, `ServletRequest.getParameter`,
-`WebApplicationContextUtils.findWebApplicationContext` all fit this shape.
+## Inferring nullness inside generics, collections, and varargs
 
-A related counter-example — accepting `@Nullable` doesn't imply a return
-contract:
+The `@Nullable` does not always go on the outer type — often the *element* or *value*
+is what can be null. Signals seen across `spring-web`:
 
-```java
-public static List<MediaType> parseMediaTypes(@Nullable String mediaTypes) {
-    if (!StringUtils.hasLength(mediaTypes)) {
-        return Collections.emptyList();   // unconditionally non-null
-    }
-    // ...
-}
-```
+| Situation | Annotation | Evidence (spring-web) |
+|-----------|------------|------------------------|
+| A `Map`/collection whose **values** may legitimately be null (e.g. URI variables) | `@Nullable` on the value type argument | `Map<String, ? extends @Nullable Object> uriVariables` (`RestOperations.getForObject`, `RequestEntity.DefaultBodyBuilder`) |
+| Varargs whose **individual elements** may be null | `@Nullable T...` | `@Nullable Object... uriVariables`, `@Nullable Object... providedArgs` |
+| A **method-level** type parameter that callers may substitute with a nullable type | bound it `<T extends @Nullable Object>` | `RestClient.RequestHeadersSpec.exchange(...)`, `ExchangeFunction<T extends @Nullable Object>` |
+| The whole map/collection is itself optional **and** its values are nullable | both: `@Nullable Map<String, ? extends @Nullable Object>` | `RequestEntity` `uriVarsMap` field |
 
-Under `@NullMarked`, the non-`@Nullable` return type already encodes "never
-null." Don't reach for `@Contract("_ -> !null")`.
+Rule: ask *can the container be absent?* (outer `@Nullable`) **separately** from *can
+an entry inside be null?* (inner `@Nullable` on the type argument / varargs element).
+Method type variables follow the same bound rule as class type variables — add
+`extends @Nullable Object` when a nullable substitution must be allowed.
 
-## The Four Shapes
+## `@Contract` clause → method category
 
-`@Contract` is shape-driven: read the method body and match it to one of these.
-For each match, callers can narrow at the call site — that narrowing is the
-payoff and the reason the contract is worth writing.
+> **Where `@Contract` is worth it:** it concentrates in low-level utilities
+> (`spring-core` `Assert`/`*Utils`, predicates, transforms). `spring-web` uses **no
+> `@Contract` at all** — ordinary service/web code relies on plain `@Nullable` plus the
+> narrow suppressions below, and builder setters just declare a non-null self-return
+> without a `_ -> this` clause. Reach for `@Contract` on reusable assertion/predicate/
+> transform helpers, not on every method.
 
-### 1. Boolean nullness-gate — the most-missed shape
+`@Contract` (`org.springframework.lang.Contract`) is declarative metadata for tools
+(NullAway/IDE); the implementation must match it exactly. Clause DSL:
+`args -> effect`, clauses separated by `;`. **Args:** `null`, `!null`, `true`,
+`false`, `_` (any). **Effects:** `fail` (throws / never returns normally), `null`,
+`!null`, `true`, `false`, `new`, `this`, `paramN` (returns the Nth arg, 1-indexed), `_`.
 
-A boolean method whose result is determined by whether an argument is null:
+Infer the clause from what the method does:
 
-```java
-@Contract("null -> true")
-public static boolean isEmpty(@Nullable Object obj) {        // true when null
-    if (obj == null) {
-        return true;
-    }
-    // ...
-    return false;
-}
+| Method category | Clause | Real example |
+|-----------------|--------|--------------|
+| Assert: throw if arg null (trailing message/supplier `_`) | `null, _ -> fail` | `Assert.notNull`, `Assert.hasText` |
+| Assert: throw if arg NOT null | `!null, _ -> fail` | `Assert.isNull` |
+| Assert: throw if boolean false | `false, _ -> fail` | `Assert.state`, `Assert.isTrue` |
+| Always throws (rethrowers) | `_ -> fail` | `ReflectionUtils.rethrowRuntimeException` |
+| Assert on a non-first arg | `_, null, _ -> fail` / `_, null, null -> fail` | `Assert.doesNotContain`, `ReflectionUtils.findField` (name or type required) |
+| Predicate, null means "no/invalid" | `null -> false` | `StringUtils.hasText`, `hasLength`; `ReflectionUtils.isEqualsMethod` |
+| Predicate, null means "empty/missing" | `null -> true` | `ObjectUtils.isEmpty`, `CollectionUtils.isEmpty` |
+| Two-arg predicate, either null ⇒ false | `null, _ -> false; _, null -> false` | `StringUtils.startsWithIgnoreCase`, `PatternMatchUtils.simpleMatch` |
+| Null-safe equals (both null ⇒ true) | `null, null -> true; null, _ -> false; _, null -> false` | `ObjectUtils.nullSafeEquals` |
+| Asymmetric two-arg predicate (order matters) | `_, null -> true; null, _ -> false` | `TypeUtils.isAssignableBound` |
+| Transform: may return null only when given null | `null -> null` | `ObjectUtils.unwrapOptional`, `SerializationUtils.deserialize` |
+| Nullness-preserving transform (strongest) | `null -> null; !null -> !null` | `StringUtils.quote`, `getFilename`; `TypeDescriptor.forObject` |
+| Filter: first arg null ⇒ null result | `null, _ -> null` / `null, _, _ -> null` | `CollectionUtils.findValueOfType` |
+| Coalesce: return one of the args | `null, _ -> param2; _, null -> param1` | `ClassUtils.determineCommonAncestor`, `StringUtils.concatenateStringArrays` |
 
-@Contract("null -> false")
-public static boolean hasText(@Nullable String str) {        // false when null
-    if (str == null || str.isEmpty()) {
-        return false;
-    }
-    // ...
-    return true;
-}
-```
+**Choosing `null -> false` vs `null -> true`:** read the method's *meaning for null*.
+"Does it have content / match / qualify?" → `false`. "Is it empty / absent?" → `true`.
 
-**Body signal:** the first branch is `if (arg == null) return <constant>;`.
-**Payoff:** the caller can narrow in the opposite branch.
-```java
-if (!ObjectUtils.isEmpty(value)) {
-    value.toString();   // checker now treats value as non-null
-}
-```
+**Single vs both transform clauses:** use `null -> null` alone when the method *only*
+returns null for null input but may legitimately return non-null otherwise; use
+`null -> null; !null -> !null` only when a non-null input is *guaranteed* to yield a
+non-null result (true nullness preservation).
 
-Without the contract, the JSpecify `@Nullable` alone leaves the caller writing
-a redundant `if (value != null)` or a `@SuppressWarnings`.
+## `@Nullable` and `@Contract` together
 
-### 2. Null-preserving transform — propagates non-null-ness
+They state different things and are often both needed:
+- `@Nullable` on the param/return = "this slot can hold null."
+- `@Contract` = the input→output relationship a checker uses downstream.
 
-A method whose return tracks its input's nullness one-to-one:
+Example: `public static void notNull(@Nullable Object object, String message)` with
+`@Contract("null, _ -> fail")` — the param *can* be null, but after a successful call
+NullAway treats `object` as non-null. A nullable-returning transform needs both the
+`@Nullable` return *and* `@Contract("null -> null; !null -> !null")` so callers
+passing a non-null value get a non-null result. `@Contract` alone suffices for
+`void`/`boolean` methods (assertions, predicates) where there is no nullable slot to mark.
 
-```java
-@Contract("null -> null; !null -> !null")
-public static @Nullable String getFilename(@Nullable String path) {
-    if (path == null) {
-        return null;
-    }
-    int sep = path.lastIndexOf('/');
-    return (sep != -1 ? path.substring(sep + 1) : path);
-}
-```
+## Choosing the suppression (last resort)
 
-**Body signal:** `if (arg == null) return null;` followed by a path that
-**always** returns non-null. The `!null -> !null` half is what callers usually
-need — a non-null input proves a non-null output.
+| Situation | Use |
+|-----------|-----|
+| Value is genuinely sometimes absent | `@Nullable` (not a suppression) |
+| Non-null field, init deferred but certain (injection, guarded lazy set) | `@SuppressWarnings("NullAway.Init")` |
+| Checker can't follow the dataflow though code is correct | `@SuppressWarnings("NullAway") // Dataflow analysis limitation` |
+| A null-guard can't be tracked across a lambda/closure boundary | `@SuppressWarnings("NullAway") // Lambda` (e.g. `CorsConfiguration.addAllowedOrigin`, `AbstractStreamingClientHttpRequest`) |
+| Non-null guaranteed by a delegated helper the checker can't see into | `@SuppressWarnings("NullAway") // Not null assertion performed in <Helper#method>` (`ResourceRegionHttpMessageConverter` → `StreamUtils#copyRange`) |
+| A domain invariant the checker can't know (value never null here) | `@SuppressWarnings("NullAway") // <field/value> is never null` (`InvalidMediaTypeException.getMessage`) |
+| Overriding a super method that isn't annotated yet | `@SuppressWarnings("NullAway") // Null-safety of Java super method not yet managed` |
+| Known checker bug | `@SuppressWarnings("NullAway") // <issue URL>` |
 
-**Use only `null -> null`** (omit the `!null -> !null` half) when the
-non-null path can itself produce null:
+Always suppress narrowly with a reason comment; never widen scope to silence warnings.
 
-```java
-@Contract("null -> null")
-public static @Nullable Object unwrapOptional(@Nullable Object obj) {
-    if (obj instanceof Optional<?> o) {
-        return o.orElse(null);   // can return null even though obj was non-null
-    }
-    return obj;
-}
-```
-
-### 3. Default-substituting — picks the first non-null
-
-```java
-@Contract("!null, _ -> param1")
-public static <T> T firstNonNull(@Nullable T primary, T fallback) {
-    return primary != null ? primary : fallback;
-}
-```
-
-**Body signal:** `arg != null ? arg : other` returning one of its arguments
-unchanged. Callers receive whichever argument was selected — `_ -> param1`,
-`null, _ -> param2`, and combinations encode this.
-
-### 4. Argument-returning fallback — passes one argument through when another is null
-
-```java
-@Contract("null, _ -> param2; _, null -> param1")
-public static String @Nullable [] concatenateStringArrays(
-        String @Nullable [] array1, String @Nullable [] array2) {
-    if (array1 == null) {
-        return array2;
-    }
-    if (array2 == null) {
-        return array1;
-    }
-    // ... merge into a result; can only be null when both inputs were null
-}
-```
-
-**Body signal:** chained `if (argN == null) return otherArg;` guards. The
-contract names *which* argument is returned, so a caller passing a known-non-null
-`array1` knows the result is non-null when `array2` is non-null too.
-
-Throws-on-null methods (`Assert.notNull(x)` and peers) earn
-`@Contract("null, _ -> fail")` — fully covered by jspecify-spring-null-safety.
-
-## Recognition Procedure
-
-For a method already carrying `@Nullable` annotations:
-
-1. Result-null depends on lookup/parse state, not on a parameter being null → `@Nullable` only, no `@Contract`.
-2. Throws when an arg is null → assertion-method rule (jspecify-spring-null-safety).
-3. Boolean return, first branch is `if (arg == null) return <true|false>;` → shape 1.
-4. `if (arg == null) return null;` then a path that always returns non-null → shape 2 (with `!null -> !null`).
-5. `if (arg == null) return null;` then a path that may itself return null → shape 2 (without `!null -> !null`).
-6. `arg != null ? arg : other`, or `if (argN == null) return otherArg;` → shape 3 or 4.
-7. None of the above → no `@Contract`. Noise on methods with no null-dependent contract.
-
-## Quick Reference: `@Nullable` Signals
-
-Reliable signals agents already apply correctly — checklist, not teaching:
-
-| Position | Signal that means `@Nullable` |
-|----------|-------------------------------|
-| Return | `return null` on any path; `@return` Javadoc says "or null if …"; returns a `@Nullable`-yielding call (`map.get(k)`, `optional.orElse(null)`) |
-| Parameter | Body tolerates null (`if (p != null)`, `p == null ? … : p`); `@param` Javadoc says "may be null" |
-| Field | Lazy (no initializer, set inside `if (f == null)` or `init()`); set only by an optional setter; cached/memoized |
-
-Counter-signal: an `Assert.notNull(arg)` at the top *enforces* a non-null
-contract — the parameter stays plain, not `@Nullable`.
-
-## Common Mistakes
+## Common mistakes
 
 | Mistake | Fix |
 |---------|-----|
-| `@Nullable` added, `@Contract` not — caller has to write a redundant null check | Match the body to one of the four shapes; add the matching `@Contract` |
-| Boolean nullness-gate left without `@Contract` — caller cannot narrow | Add `@Contract("null -> true")` or `"null -> false"` |
-| Using `@Contract("null -> null; !null -> !null")` on a method whose non-null path can return null | Drop the `!null -> !null` half; the contract lies otherwise |
-| `@Contract` on a method with no null-dependent contract | Remove it — noise, and a maintenance hazard |
-| `@Contract` on a lookup-or-null method (`getCookie`, `getFirst`, `getParameter`) | Remove it — null comes from the lookup missing, not from a parameter; `@Nullable` alone is right |
-| `@Contract("_ -> !null")` on a parse method returning an empty collection | Remove it — under `@NullMarked`, a non-`@Nullable` return already encodes "never null" |
+| Marking a "prefer empty over null" method `@Nullable` | Leave it non-null; it returns empty, not null. |
+| Putting `@Nullable` on a `boolean`/primitive predicate | Express null behavior with `@Contract("null -> true/false")` instead. |
+| Using `NullAway.Init` for a value that's truly optional | Use `@Nullable`; `NullAway.Init` is only for *certain-before-use* init. |
+| `@Contract` clause that the implementation doesn't actually honor | The contract must match real behavior exactly, or it misleads tools. |
+| Adding `@Contract` but omitting `@Nullable` on a nullable param/return | Add both — they encode different facts. |
+| `null -> null; !null -> !null` on a method that can return null for non-null input | Use single-clause `null -> null`; the strong form asserts preservation. |

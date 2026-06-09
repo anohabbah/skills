@@ -1,118 +1,102 @@
 ---
 name: nullaway-configure
-description: Use when setting up NullAway with JSpecify mode in a Java project's build — Gradle (Groovy DSL), Gradle (Kotlin DSL), or Maven — to enforce `@NullMarked`/`@Nullable` annotations at compile time.
+description: Use when wiring NullAway (JSpecify mode) into a Java build so nullness violations fail compilation — configuring Error Prone + NullAway in a Gradle Groovy build.gradle, a Gradle Kotlin build.gradle.kts, or a Maven pom.xml, picking the jspecifyMode/onlyNullMarked/RequireExplicitNullMarking knobs, and choosing plugin versions and the JDK/release baseline.
+license: MIT
+metadata:
+  author: nullaway-configure
+  version: "1.0"
+  source: https://github.com/sdeleuze/jspecify-nullaway-demo (main + maven branch)
 ---
 
-# Configure NullAway with JSpecify
+# Configuring NullAway (JSpecify mode)
 
-## Overview
+NullAway is an **Error Prone plugin** that checks JSpecify nullness at compile time and
+turns violations into build failures. Companion to `jspecify-userguide` /
+`jspecify-spring-null-safety` (the annotation rules) — this skill is the *build wiring*
+that enforces them. Versions below are from the reference demo; check for newer releases.
 
-[NullAway](https://github.com/uber/NullAway) is an Error Prone-based static analyzer that enforces null safety at compile time. In **JSpecify mode** it consumes the standard `org.jspecify.annotations` (`@NullMarked`, `@NullUnmarked`, `@Nullable`) and treats violations as build errors.
+## Prerequisites (all build systems)
 
-A working setup needs four things wired together:
+- `org.jspecify:jspecify:1.0.0` on the compile classpath.
+- Code marked with `@NullMarked` (e.g. in each `package-info.java`).
+- A **recent javac** (the demo uses a JDK 25 toolchain) — JSpecify mode needs JDK 22+.
+  You can still target an older bytecode baseline via `release`/`java.version` (demo
+  keeps `release = 17` while compiling with JDK 25).
 
-1. **JSpecify annotations** on the classpath (`org.jspecify:jspecify`).
-2. **Error Prone** as the compiler plugin host.
-3. **NullAway** as an Error Prone plugin, configured with `jspecifyMode = true`.
-4. A **recent JDK** (24+, the demo uses 25) to run javac — NullAway's JSpecify mode needs current javac internals. You can still target an older bytecode level via `--release`.
+## The four NullAway knobs
 
-The reference demo this skill mirrors: <https://github.com/sdeleuze/jspecify-nullaway-demo> (Gradle on `main`, Maven on the `maven` branch).
+| Knob | Effect |
+|------|--------|
+| `jspecifyMode = true` | Full JSpecify semantics (generics, bounds, arrays). Needs recent javac. |
+| `onlyNullMarked = true` | Check only `@NullMarked` code; treat unmarked code as unspecified. |
+| `nullaway { error() }` | Make nullness violations **errors** (fail the build), not warnings. |
+| `error('RequireExplicitNullMarking')` | Force every class to be explicitly `@NullMarked` or `@NullUnmarked`. |
 
-## When to Use
+Pair with `disableAllChecks = true` to run **only** NullAway and skip the rest of Error
+Prone. The Gradle plugins inject the required `-XDcompilePolicy=simple -Xplugin:ErrorProne`
+javac args automatically; on raw javac you must add them yourself.
 
-- Adding null-safety enforcement to a new or existing Java module.
-- Migrating from `org.springframework.lang.Nullable` / `javax.annotation.Nullable` to JSpecify and wanting compile-time checking.
-- Setting up CI to fail on unannotated APIs (`RequireExplicitNullMarking`).
-- Pair with [[jspecify-user-guide]] for annotation semantics and [[jspecify-spring-framework-patterns]] for Spring-specific patterns.
-
-Not for: runtime null checks (use `Objects.requireNonNull` / Bean Validation), Kotlin code (the compiler already does this), or non-JVM languages.
-
-## Key Configuration Knobs
-
-| Knob | Purpose | Demo value |
-|------|---------|-----------|
-| `nullaway.onlyNullMarked` | Only analyze code inside `@NullMarked` scopes | `true` |
-| `nullaway.jspecifyMode` | Interpret JSpecify annotations per [JSpecify spec](https://jspecify.dev/) | `true` |
-| `errorprone.disableAllChecks` | Run *only* NullAway, skip other Error Prone checks | `true` |
-| `errorprone.error('RequireExplicitNullMarking')` | Fail build if any package/class lacks `@NullMarked` or `@NullUnmarked` | enabled |
-| `errorprone.nullaway { error() }` | Promote NullAway warnings to errors | enabled |
-| `java.toolchain.languageVersion` | JDK used to *run* javac (needs recent version) | `25` |
-| `options.release` | Bytecode target (can stay on LTS) | `17` |
-
-## Gradle (Groovy DSL) — `build.gradle`
+## Gradle (Groovy) — `build.gradle`
 
 ```groovy
 plugins {
     id 'java'
-    id 'net.ltgt.errorprone' version '5.1.0'  // gradle-errorprone-plugin
-    id 'net.ltgt.nullaway'  version '3.0.0'   // gradle-nullaway-plugin
+    id 'net.ltgt.errorprone' version '5.1.0'
+    id 'net.ltgt.nullaway' version '3.0.0'
 }
 
-repositories { mavenCentral() }
-
 java {
-    toolchain {
-        // Recent javac required for NullAway JSpecify mode
-        languageVersion = JavaLanguageVersion.of(25)
-    }
+    toolchain { languageVersion = JavaLanguageVersion.of(25) } // recent javac for JSpecify mode
 }
 
 tasks.withType(JavaCompile).configureEach {
     options.errorprone {
-        disableAllChecks = true                    // run only NullAway
-        error('RequireExplicitNullMarking')        // every type must be @NullMarked or @NullUnmarked
-        nullaway {
-            error()                                // promote to error
-        }
+        disableAllChecks = true                  // run only NullAway
+        error('RequireExplicitNullMarking')      // every type must be @NullMarked/@NullUnmarked
+        nullaway { error() }                     // violations fail the build
     }
-    options.release = 17                           // keep bytecode on an LTS baseline
+    options.release = 17                         // bytecode baseline
 }
 
 nullaway {
     onlyNullMarked = true
-    jspecifyMode   = true
+    jspecifyMode = true
 }
 
 dependencies {
     implementation 'org.jspecify:jspecify:1.0.0'
-    errorprone     'com.google.errorprone:error_prone_core:2.42.0'
-    errorprone     'com.uber.nullaway:nullaway:0.13.4'
+    errorprone 'com.google.errorprone:error_prone_core:2.42.0'
+    errorprone 'com.uber.nullaway:nullaway:0.13.4'
 }
 ```
 
-## Gradle (Kotlin DSL) — `build.gradle.kts`
+## Gradle (Kotlin) — `build.gradle.kts`
 
-Identical setup; only differences are the `import` for the `errorprone` extension accessor and Kotlin syntax.
+Same setup; note the required import and the `withType<JavaCompile>` / parenthesized DSL.
 
 ```kotlin
-import net.ltgt.gradle.errorprone.errorprone
+import net.ltgt.gradle.errorprone.errorprone   // required to access options.errorprone
 
 plugins {
-    java
+    id("java")
     id("net.ltgt.errorprone") version "5.1.0"
-    id("net.ltgt.nullaway")  version "3.0.0"
+    id("net.ltgt.nullaway") version "3.0.0"
 }
 
-repositories { mavenCentral() }
-
 java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
-    }
+    toolchain { languageVersion = JavaLanguageVersion.of(25) }
 }
 
 nullaway {
     onlyNullMarked = true
-    jspecifyMode   = true
+    jspecifyMode = true
 }
 
 tasks.withType<JavaCompile> {
     options.errorprone {
         disableAllChecks = true
         error("RequireExplicitNullMarking")
-        nullaway {
-            error()
-        }
+        nullaway { error() }
     }
     options.release = 17
 }
@@ -126,95 +110,58 @@ dependencies {
 
 ## Maven — `pom.xml`
 
-The demo's `maven` branch uses [am.ik.maven:nullability-maven-plugin](https://github.com/making/nullability-maven-plugin), which auto-wires Error Prone + NullAway + JSpecify mode into `maven-compiler-plugin` so you don't hand-write all the `<annotationProcessorPath>` / `<compilerArg>` boilerplate.
+The demo's maven branch uses the **`nullability-maven-plugin`**, which auto-wires Error
+Prone + NullAway into the compiler plugin via its `configure` goal (`<extensions>true</extensions>`
+lets it inject compiler args):
 
 ```xml
-<project xmlns="http://maven.apache.org/POM/4.0.0">
-    <modelVersion>4.0.0</modelVersion>
-    <groupId>com.example</groupId>
-    <artifactId>my-app</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+<properties>
+    <java.version>25</java.version>
+</properties>
 
-    <properties>
-        <java.version>25</java.version>
-    </properties>
+<dependencies>
+    <dependency>
+        <groupId>org.jspecify</groupId>
+        <artifactId>jspecify</artifactId>
+        <version>1.0.0</version>
+    </dependency>
+</dependencies>
 
-    <dependencies>
-        <dependency>
-            <groupId>org.jspecify</groupId>
-            <artifactId>jspecify</artifactId>
-            <version>1.0.0</version>
-        </dependency>
-    </dependencies>
-
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.14.1</version>
-            </plugin>
-            <plugin>
-                <groupId>am.ik.maven</groupId>
-                <artifactId>nullability-maven-plugin</artifactId>
-                <version>0.3.0</version>
-                <extensions>true</extensions>           <!-- required so it can patch the compiler plugin -->
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>configure</goal>      <!-- injects Error Prone + NullAway config -->
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
-    </build>
-</project>
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <version>3.14.1</version>
+        </plugin>
+        <plugin>
+            <groupId>am.ik.maven</groupId>
+            <artifactId>nullability-maven-plugin</artifactId>
+            <version>0.3.0</version>
+            <extensions>true</extensions>
+            <executions>
+                <execution>
+                    <goals><goal>configure</goal></goals>
+                </execution>
+            </executions>
+        </plugin>
+    </plugins>
+</build>
 ```
 
-Set `<java.version>` to the JDK actually running Maven; the plugin adds the `--release` flag for you. To override defaults (e.g. allow legacy `javax.annotation.Nullable`), see the plugin README.
+If you cannot use that convenience plugin, the manual equivalent configures
+`maven-compiler-plugin` with Error Prone + NullAway on `annotationProcessorPaths` and the
+`-XDcompilePolicy=simple -Xplugin:ErrorProne -XepOpt:NullAway:...` compiler args — the
+plugin exists precisely to avoid that boilerplate.
 
-## Minimum source-level setup
+## Gotchas
 
-Once the build is configured, you still need at least one `@NullMarked` scope, otherwise NullAway has nothing to check (with `onlyNullMarked = true`) and `RequireExplicitNullMarking` will fail. The conventional place is a `package-info.java`:
-
-```java
-@NullMarked
-package org.example;
-
-import org.jspecify.annotations.NullMarked;
-```
-
-Then mark individual nullable returns/parameters with `@Nullable`:
-
-```java
-public @Nullable String extractToken(String input) {
-    return input.contains("token") ? "token" : null;
-}
-```
-
-## Verifying
-
-- `./gradlew build` (or `./mvnw verify`) — should compile clean on annotated code, fail on a deliberate `null` returned from a non-`@Nullable` method.
-- Remove `@NullMarked` from `package-info.java` — `RequireExplicitNullMarking` should fail the build.
-- Reintroduce the leak from the demo: have `DefaultTokenExtractor.extractToken` return `null` but drop `@Nullable` from the signature; NullAway should flag the dereference site.
-
-## Common Mistakes
-
-| Mistake | Symptom | Fix |
-|---------|---------|-----|
-| Old JDK running javac | `IllegalAccessError` from NullAway, or JSpecify mode silently weakened | Set Gradle `toolchain.languageVersion` (or Maven JDK) to 24+ |
-| Forgot `errorprone` configuration entries for the deps | `error_prone_core` / `nullaway` on `implementation` instead of `errorprone` | Use the dedicated `errorprone` configuration (Gradle) — Maven plugin handles this |
-| No `@NullMarked` anywhere | Build passes but nothing is checked | Add `package-info.java` with `@NullMarked` (or annotate at type/module level) |
-| Mixing `jakarta`/`javax`/Spring `@Nullable` with JSpecify | NullAway ignores foreign annotations in `jspecifyMode` | Migrate imports to `org.jspecify.annotations.Nullable` |
-| Targeting a newer `--release` than needed | Downstream consumers on LTS break | Decouple toolchain (run javac on 25) from `options.release` (emit 17) |
-
-## References
-
-- Demo repo (Gradle): <https://github.com/sdeleuze/jspecify-nullaway-demo>
-- Demo repo (Maven branch): <https://github.com/sdeleuze/jspecify-nullaway-demo/tree/maven>
-- NullAway: <https://github.com/uber/NullAway>
-- gradle-errorprone-plugin: <https://github.com/tbroyer/gradle-errorprone-plugin>
-- gradle-nullaway-plugin: <https://github.com/tbroyer/gradle-nullaway-plugin>
-- nullability-maven-plugin: <https://github.com/making/nullability-maven-plugin>
-- JSpecify: <https://jspecify.dev/>
+| Symptom | Cause / fix |
+|---------|-------------|
+| NullAway reports nothing | Code isn't `@NullMarked`, or `onlyNullMarked = true` excludes it. Add `@NullMarked`. |
+| `jspecifyMode` errors / generics not checked | javac too old; use a JDK 22+ toolchain (demo uses 25). |
+| Violations are only warnings | Add `nullaway { error() }` (and run NullAway as `error`, not `warn`). |
+| Flood of unrelated Error Prone findings | Set `disableAllChecks = true` and re-enable only NullAway. |
+| `options.errorprone` unresolved in Kotlin DSL | Add `import net.ltgt.gradle.errorprone.errorprone`. |
+| Error Prone not actually running on raw javac | Missing `-XDcompilePolicy=simple -Xplugin:ErrorProne`; the Gradle/Maven plugins add these for you. |
+| Want classes flagged when neither marked nor unmarked | `error('RequireExplicitNullMarking')`. |
