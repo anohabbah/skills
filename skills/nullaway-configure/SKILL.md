@@ -72,10 +72,11 @@ dependencies {
 
 ## Gradle (Kotlin) — `build.gradle.kts`
 
-Same setup; note the required import and the `withType<JavaCompile>` / parenthesized DSL.
+Same setup; note the two required imports and the `withType<JavaCompile>` / parenthesized DSL.
 
 ```kotlin
 import net.ltgt.gradle.errorprone.errorprone   // required to access options.errorprone
+import net.ltgt.gradle.nullaway.nullaway       // required for nullaway { } inside options.errorprone
 
 plugins {
     id("java")
@@ -163,5 +164,6 @@ plugin exists precisely to avoid that boilerplate.
 | Violations are only warnings | Add `nullaway { error() }` (and run NullAway as `error`, not `warn`). |
 | Flood of unrelated Error Prone findings | Set `disableAllChecks = true` and re-enable only NullAway. |
 | `options.errorprone` unresolved in Kotlin DSL | Add `import net.ltgt.gradle.errorprone.errorprone`. |
+| Kotlin DSL: per-task options like `customContractAnnotations` unresolved inside `options.errorprone { nullaway { } }` | Without `import net.ltgt.gradle.nullaway.nullaway`, that block silently binds to the project-level `nullaway` extension, which lacks per-task options. Add the import. |
 | Error Prone not actually running on raw javac | Missing `-XDcompilePolicy=simple -Xplugin:ErrorProne`; the Gradle/Maven plugins add these for you. |
 | Want classes flagged when neither marked nor unmarked | `error('RequireExplicitNullMarking')`. |
